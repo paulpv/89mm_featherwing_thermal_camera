@@ -3,15 +3,46 @@
 
   Designed specifically to work with:
    * Adafruit AMG8833 Featherwing.
-      https://www.adafruit.com/product/3622
+     https://www.adafruit.com/product/3622
+     AMG8833
+       * https://na.industrial.panasonic.com/products/sensors/sensors-automotive-industrial-applications/lineup/grid-eyer-infrared-array-sensor/series/70496/model/72453
+       * https://b2b-api.panasonic.eu/file_stream/pids/fileversion/1300
+       * https://cdn-learn.adafruit.com/assets/assets/000/043/261/original/Grid-EYE_SPECIFICATIONS%28Reference%29.pdf
+       * https://cdn.sparkfun.com/assets/4/1/c/0/1/Grid-EYE_Datasheet.pdf
    * 3.5" TFT Featherwing:
       https://www.adafruit.com/product/3651
 
-  readPixels assumes the sensor is oriented as follows:
+  "Panasonic Infrared Array Sensor Grid-EYE (AMG88)" datasheet "Pixel array and viewing field":
+  NOTE: Inverted to place array index 0 first
+   Up↑
   ┌───┐
-  │ ~ │ ~ == Writing
-  │ █ │ █ == Sensor
+  │ ~ │ <- Label
+  │ █ │ <- Sensor
   └───┘
+  [
+  00, 01, 02, 03, 04, 05, 06, 07,
+  08, 09, 10, 11, 12, 13, 14, 15,
+  16, 17, 18, 19, 20, 21, 22, 23,
+  24, 25, 26. 27, 28, 29, 30, 31,
+  32, 33, 34, 35, 36, 37, 38, 39,
+  40, 41, 42, 43, 44, 45, 46, 47,
+  48, 49, 50, 51, 52, 53, 54, 55,
+  56, 57, 58, 59, 60, 61, 62, 63,
+  ]
+
+  AMG88xx FeatherWing docked to 2.8" TFT FeatherWing:
+  ┌─────────────────────────┐
+  │┌─────────┐      ┌──────┐│
+  ││:       :│      │SDCard││
+  ││:  Up↑  :│      └──────┘│
+  ││: ┌───┐ :│              │
+  ││: │ ~ │ :│           Off│
+  ││: │ █ │ :│              │
+  ││: └───┘ :│            On│
+  ││RST     :│              │
+  ││        :│              │
+  │└─────────┘           RST│
+  └─────────────────────────┘
   [
   00, 01, 02, 03, 04, 05, 06, 07, // Top Left         Top Right
   08, 09, 10, 11, 12, 13, 14, 15,
@@ -22,6 +53,32 @@
   48, 49, 50, 51, 52, 53, 54, 55,
   56, 57, 58, 59, 60, 61, 62, 63, // Bottom Left   Bottom Right
   ]
+
+  AMG88xx FeatherWing docked to 3.5" TFT FeatherWing:
+  ┌────────────────────────────────┐
+  │                        ┌──────┐│
+  │                        │SDCard││
+  │┌─────────────────┐     └──────┘│
+  ││     ┌─────┐     │             │
+  ││     │ █ ~ │     │          Off│
+  ││     └─────┘     │             │
+  │└─────────────────┘           On│
+  │                                │
+  │                             RST│
+  └────────────────────────────────┘
+  [
+  56, 48, 40, 32, 24, 16, 08, 00, // Top Left         Top Right
+  57, 49, 41, 33, 25, 17, 09, 01,
+  58, 50, 42, 34, 26, 18, 10, 02,
+  59, 51, 43, 35, 27, 19, 11, 03,
+  60, 52, 44, 36, 28, 20, 12, 04,
+  61, 53, 45, 37, 29, 21, 13, 05,
+  62, 54, 46, 38, 30, 22, 14, 06,
+  63, 55, 47, 39, 31, 23, 15, 07, // Bottom Left   Bottom Right
+  ]
+
+  If you display more than just the thermal colors then you will need to software
+  rotate the array or display if you physically rotate the sensor or display.
  ***************************************************************************/
  
 #include <Adafruit_HX8357.h>
@@ -36,22 +93,29 @@
 
 #define TFT_RST -1
 
-// Comment this out to remove the text overlay
-#define SHOW_TEMP_TEXT
+// Comment this out to not log read pixel values
+#define LOG_READ_PIXEL_VALUES
+// Comment this out to not log interpolation timing
+#define LOG_INTERPOLATION_TIMING
 
-#define SHOW_FAHRENHEIT
+// Comment this out to remove the text overlay
+//#define SHOW_TEMP_TEXT
+//#define SHOW_FAHRENHEIT
+
+// c * 9/5 + 32 == c * 1.8 + 32
+#define C2F(c) ((c) * 1.8 + 32.0)
 
 //
-// 0,1,2,3 == 0,90,180,270 degrees
+// 0,1,2,3 == 0,90,180,270 degrees respectively
 //
 #define ROTATION_DISPLAY 2
 #define ROTATION_SENSOR 0
 
-//low range of the sensor (this will be blue on the screen)
+// Low range of the sensor (this will be blue on the screen)
 // Min 0, Max 80, Suggest 20
-#define MINTEMP 0
+#define MINTEMP 20
 
-//high range of the sensor (this will be red on the screen)
+// High range of the sensor (this will be red on the screen)
 // Min 0, Max 80, Suggest 28
 #define MAXTEMP 80
 
@@ -137,30 +201,31 @@ float dest_2d[INTERPOLATED_ROWS * INTERPOLATED_COLS];
 void loop() {
   amg.readPixels(pixels);
 
-#if false
-Serial.print("[\n");
+  #ifdef LOG_READ_PIXEL_VALUES
+  String debugText;
+  debugText += "pixels=[\n";
   for(int i=1; i<=AMG88xx_PIXEL_ARRAY_SIZE; i++){
-    Serial.print(pixels[i-1]);
-    Serial.print(", ");
-    if( i % 8 == 0 ) Serial.println();
+    debugText += String(pixels[i-1]) + ", ";
+    if( i % 8 == 0 ) debugText += "\n";
   }
-  Serial.println("]");
-  Serial.println();
-#endif
+  debugText += "]\n";
+  Serial.println(debugText);
+  #endif
 
-  //int32_t t = millis();
-  interpolate_image(pixels, AMG_ROWS, AMG_COLS, dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS);
-  //Serial.print("Interpolation took "); Serial.print(millis()-t); Serial.println(" ms");
+  #ifdef LOG_INTERPOLATION_TIMING
+  int32_t t = millis();
+  #endif
   
-  drawpixels(dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS, displayPixelWidth, displayPixelHeight, false, true);
+  interpolate_image(pixels, AMG_ROWS, AMG_COLS, dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS);
+  
+  #ifdef LOG_INTERPOLATION_TIMING
+  Serial.println("Interpolation took " + String(millis()-t) + " ms");
+  #endif
+  
+  drawpixels(dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS, displayPixelWidth, displayPixelHeight);
 }
 
-int c2f(int c) {
-  return c * 9 / 5.0 + 32;
-}
-
-void drawpixels(float *p, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t boxHeight,
-                boolean showVal, boolean fahrenheit) {
+void drawpixels(float *p, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t boxHeight) {
   int colorTemp;
   for (int y=0; y<rows; y++) {
     for (int x=0; x<cols; x++) {
@@ -174,16 +239,16 @@ void drawpixels(float *p, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t 
       uint16_t color = camColors[colorIndex];
       
       tft.fillRect(boxWidth * x, boxHeight * y, boxWidth, boxHeight, color);
-        
-      if (showVal) {
+
+      #ifdef SHOW_TEMP_TEXT
         tft.setCursor(boxWidth * y + boxWidth/2 - 12, boxHeight * x + boxHeight/2 - 4);
         tft.setTextColor(HX8357_WHITE);
         tft.setTextSize(1);
-        if (fahrenheit) {
-          val = c2f(val);
-        }
+        #ifdef SHOW_FAHRENHEIT
+          val = C2F(val);
+        #endif
         tft.print(val,1);
-      }
+      #endif
     } 
   }
 }
