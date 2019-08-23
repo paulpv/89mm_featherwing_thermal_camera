@@ -43,6 +43,7 @@
   ││        :│              │
   │└─────────┘           RST│
   └─────────────────────────┘
+  Looking in to Sensor (opposite direction that Sensor is looking):
   [
   00, 01, 02, 03, 04, 05, 06, 07, // Top Left         Top Right
   08, 09, 10, 11, 12, 13, 14, 15,
@@ -52,6 +53,17 @@
   40, 41, 42, 43, 44, 45, 46, 47,
   48, 49, 50, 51, 52, 53, 54, 55,
   56, 57, 58, 59, 60, 61, 62, 63, // Bottom Left   Bottom Right
+  ]
+  Looking in direction that Sensor is looking:
+  [
+  07, 06, 05, 04, 03, 02, 01, 00, // Top Left         Top Right
+  15, 14, 13, 12, 11, 10, 09, 08,
+  23, 22, 21, 20, 19, 18, 17, 16,
+  31, 30, 29, 28, 27, 26, 25, 24,
+  39, 38, 37, 36, 35, 34, 33, 32,
+  47, 46, 45, 44, 43, 42, 41, 40,
+  55, 54, 53, 52, 51, 50, 49, 48,
+  63, 62, 61, 60, 59, 58, 57, 56, // Bottom Left   Bottom Right
   ]
 
   AMG88xx FeatherWing docked to 3.5" TFT FeatherWing:
@@ -66,6 +78,7 @@
   │                                │
   │                             RST│
   └────────────────────────────────┘
+  Looking in to Sensor (opposite direction that Sensor is looking):
   [
   56, 48, 40, 32, 24, 16, 08, 00, // Top Left         Top Right
   57, 49, 41, 33, 25, 17, 09, 01,
@@ -76,13 +89,26 @@
   62, 54, 46, 38, 30, 22, 14, 06,
   63, 55, 47, 39, 31, 23, 15, 07, // Bottom Left   Bottom Right
   ]
+  Looking in direction that Sensor is looking:
+  [
+  00, 08, 16, 24, 32, 40, 48, 56, // Top Left         Top Right
+  01, 09, 17, 25, 33, 41, 49, 57,
+  02, 10, 18, 26, 34, 42, 50, 58,
+  03, 11, 19, 27, 35, 43, 51, 59,
+  04, 12, 20, 28, 36, 44, 52, 60,
+  05, 13, 21, 29, 37, 45, 53, 61,
+  06, 14, 22, 30, 38, 46, 54, 62,
+  07, 15, 23, 31, 39, 47, 55, 63, // Bottom Left   Bottom Right
+  ]
 
   If you display more than just the thermal colors then you will need to software
   rotate the array or display if you physically rotate the sensor or display.
  ***************************************************************************/
- 
+
 #include <Adafruit_HX8357.h>
 #include <Adafruit_AMG88xx.h>
+
+#include <Fonts/TomThumb.h> // 3x5 pixels: too hard to read
 
 #ifdef ESP32
    #define STMPE_CS 32
@@ -93,27 +119,33 @@
 
 #define TFT_RST -1
 
-// Comment this out to not log read pixel values
-#define LOG_READ_PIXEL_VALUES
+// Comment this out to not log raw read pixel values
+//#define LOG_READ_PIXEL_VALUES_RAW
+// Comment this out to not log rotated read pixel values
+//#define LOG_READ_PIXEL_VALUES_ROTATED
+// Comment this out to not log rotation timing
+//#define LOG_ROTATION_TIMING
 // Comment this out to not log interpolation timing
-#define LOG_INTERPOLATION_TIMING
+//#define LOG_INTERPOLATION_TIMING
 
-// Comment this out to remove the text overlay
-//#define SHOW_TEMP_TEXT
-//#define SHOW_FAHRENHEIT
+// Comment this out to not display temperature values
+#define SHOW_TEMP_TEXT
+// Comment this out to use celsius instead of fahrenheit
+#define SHOW_FAHRENHEIT
 
 // c * 9/5 + 32 == c * 1.8 + 32
 #define C2F(c) ((c) * 1.8 + 32.0)
+#define ROUND(x) ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
 
 //
 // 0,1,2,3 == 0,90,180,270 degrees respectively
 //
-#define ROTATION_DISPLAY 2
-#define ROTATION_SENSOR 0
+#define ROTATION_DISPLAY 3
+#define ROTATION_SENSOR 1
 
 // Low range of the sensor (this will be blue on the screen)
 // Min 0, Max 80, Suggest 20
-#define MINTEMP 20
+#define MINTEMP 0
 
 // High range of the sensor (this will be red on the screen)
 // Min 0, Max 80, Suggest 28
@@ -148,17 +180,19 @@ const uint16_t camColors[] = {0x480F,
 0xF1E0,0xF1C0,0xF1A0,0xF180,0xF160,0xF140,0xF100,0xF0E0,0xF0C0,0xF0A0,
 0xF080,0xF060,0xF040,0xF020,0xF800,};
 
-Adafruit_HX8357 tft = Adafruit_HX8357(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_HX8357 display = Adafruit_HX8357(TFT_CS, TFT_DC, TFT_RST);
 
 Adafruit_AMG88xx amg;
 unsigned long delayTime;
 
 #define AMG_COLS 8
 #define AMG_ROWS 8
-float pixels[AMG_COLS * AMG_ROWS];
+float pixelsRaw[AMG_COLS * AMG_ROWS];
+float pixelsRotated[AMG_COLS * AMG_ROWS];
 
 #define INTERPOLATED_COLS 24
 #define INTERPOLATED_ROWS 24
+float pixelsInterpolated[INTERPOLATED_ROWS * INTERPOLATED_COLS];
 
 float get_point(float *p, uint8_t rows, uint8_t cols, int8_t x, int8_t y);
 void interpolate_image(float *src, uint8_t src_rows, uint8_t src_cols, 
@@ -170,16 +204,25 @@ uint16_t displayHeight;
 uint16_t displayPixelWidth;
 uint16_t displayPixelHeight;
 
+#define FONT_SCALE 1
+const uint16_t SCREEN_COLOR_TEXT = HX8357_WHITE;
+const uint16_t SCREEN_COLOR_BACKGROUND = HX8357_BLACK;
+
 void setup() {
   Serial.begin(115200);
   Serial.println(F("AMG88xx thermal camera!"));
 
-  tft.begin();
-  tft.setRotation(ROTATION_DISPLAY);
-  tft.fillScreen(HX8357_BLACK);
+  display.begin();
+  display.setRotation(ROTATION_DISPLAY);
+  display.fillScreen(SCREEN_COLOR_BACKGROUND);
+  
+  display.setFont(&TomThumb);
+  display.setTextSize(FONT_SCALE);
+  display.setTextWrap(false);
+  display.setTextColor(SCREEN_COLOR_TEXT);//, SCREEN_COLOR_BACKGROUND);
 
-  displayWidth = tft.width();
-  displayHeight = tft.height();
+  displayWidth = display.width();
+  displayHeight = display.height();
   Serial.println("Display Size: " + String(displayWidth) + "x" + String(displayHeight));
 
   displayPixelWidth = displayWidth / INTERPOLATED_COLS;
@@ -196,40 +239,87 @@ void setup() {
   delay(100); // let sensor boot up
 }
 
-float dest_2d[INTERPOLATED_ROWS * INTERPOLATED_COLS];
-
-void loop() {
-  amg.readPixels(pixels);
-
-  #ifdef LOG_READ_PIXEL_VALUES
+void printPixels(String name, float *pixels) {
   String debugText;
-  debugText += "pixels=[\n";
+  debugText += "\n" + name + "=[\n";
   for(int i=1; i<=AMG88xx_PIXEL_ARRAY_SIZE; i++){
     debugText += String(pixels[i-1]) + ", ";
     if( i % 8 == 0 ) debugText += "\n";
   }
   debugText += "]\n";
   Serial.println(debugText);
+}
+
+void rotatePixels(float *pIn, float* pOut, int rows, int cols, int rotation) {
+  int total = rows*cols;
+  for(int i=0; i < total; i++) {
+    int _x = i / cols;
+    int _y = i % rows;
+    int x;
+    int y;
+    if (rotation == 0) {
+      x = _x;
+      y = _y;
+    } else if (rotation == 1) {
+      x = _y;
+      y = (rows - 1) - _x;
+    } else if (rotation == 2) {
+      x = (rows - 1) - _x;
+      y = (cols - 1) - _y;
+    } else if (rotation == 3) {
+      x = (cols - 1) - _y;
+      y = _x;
+    } else {
+      return;
+    }
+    //Serial.println("i,x,y=" + String(i) + "," + String(x) + "," + String(y));
+    
+    int indexIn = x * rows + y;
+    //Serial.println("indexIn=" + String(indexIn));
+    float val = pIn[indexIn];
+
+    int indexOut = i;
+    //Serial.println("indexOut=" + String(indexOut));
+
+    pOut[indexOut] = val;
+  }
+}
+
+int32_t t;
+
+void loop() {
+  amg.readPixels(pixelsRaw);
+
+  #ifdef LOG_READ_PIXEL_VALUES_RAW
+  printPixels("pixelsRaw", pixelsRaw);
+  #endif
+  #ifdef LOG_ROTATION_TIMING
+  t = millis();
+  #endif
+  rotatePixels(pixelsRaw, pixelsRotated, AMG_ROWS, AMG_COLS, ROTATION_SENSOR);
+  #ifdef LOG_ROTATION_TIMING
+  Serial.println("Rotation took " + String(millis()-t) + " ms");
+  #endif
+  #ifdef LOG_READ_PIXEL_VALUES_ROTATED
+  printPixels("pixelsRotated", pixelsRotated);
   #endif
 
   #ifdef LOG_INTERPOLATION_TIMING
-  int32_t t = millis();
+  t = millis();
   #endif
-  
-  interpolate_image(pixels, AMG_ROWS, AMG_COLS, dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS);
-  
+  interpolate_image(pixelsRotated, AMG_ROWS, AMG_COLS, pixelsInterpolated, INTERPOLATED_ROWS, INTERPOLATED_COLS);
   #ifdef LOG_INTERPOLATION_TIMING
   Serial.println("Interpolation took " + String(millis()-t) + " ms");
   #endif
   
-  drawpixels(dest_2d, INTERPOLATED_ROWS, INTERPOLATED_COLS, displayPixelWidth, displayPixelHeight);
+  drawpixels(pixelsInterpolated, INTERPOLATED_ROWS, INTERPOLATED_COLS, displayPixelWidth, displayPixelHeight);
 }
 
-void drawpixels(float *p, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t boxHeight) {
+void drawpixels(float *pixels, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t boxHeight) {
   int colorTemp;
   for (int y=0; y<rows; y++) {
     for (int x=0; x<cols; x++) {
-      float val = get_point(p, rows, cols, x, y);
+      float val = get_point(pixels, rows, cols, x, y);
       if(val >= MAXTEMP) colorTemp = MAXTEMP;
       else if(val <= MINTEMP) colorTemp = MINTEMP;
       else colorTemp = val;
@@ -237,17 +327,19 @@ void drawpixels(float *p, uint8_t rows, uint8_t cols, uint8_t boxWidth, uint8_t 
       uint8_t colorIndex = map(colorTemp, MINTEMP, MAXTEMP, 0, 255);
       colorIndex = constrain(colorIndex, 0, 255);
       uint16_t color = camColors[colorIndex];
+
+      int px = boxWidth * x;
+      int py = boxHeight * y;
       
-      tft.fillRect(boxWidth * x, boxHeight * y, boxWidth, boxHeight, color);
+      display.fillRect(px, py, boxWidth, boxHeight, color);
 
       #ifdef SHOW_TEMP_TEXT
-        tft.setCursor(boxWidth * y + boxWidth/2 - 12, boxHeight * x + boxHeight/2 - 4);
-        tft.setTextColor(HX8357_WHITE);
-        tft.setTextSize(1);
+        display.setCursor(px, py);
+        //display.setTextColor(SCREEN_COLOR_TEXT);//, color);
         #ifdef SHOW_FAHRENHEIT
           val = C2F(val);
         #endif
-        tft.print(val,1);
+        display.print(ROUND(val));//, 1);
       #endif
     } 
   }
