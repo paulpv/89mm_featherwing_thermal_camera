@@ -223,7 +223,7 @@ void setup() {
 
   displayWidth = display.width();
   displayHeight = display.height();
-  Serial.println("Display Size: " + String(displayWidth) + "x" + String(displayHeight));
+  Serial.println("      Display Size: " + String(displayWidth) + "x" + String(displayHeight));
 
   displayPixelWidth = displayWidth / INTERPOLATED_COLS;
   displayPixelHeight = displayHeight / INTERPOLATED_ROWS;
@@ -334,12 +334,24 @@ void drawpixels(float *pixels, uint8_t rows, uint8_t cols, uint8_t boxWidth, uin
       display.fillRect(px, py, boxWidth, boxHeight, color);
 
       #ifdef SHOW_TEMP_TEXT
-        display.setCursor(px, py);
-        //display.setTextColor(SCREEN_COLOR_TEXT);//, color);
+        String text;
         #ifdef SHOW_FAHRENHEIT
           val = C2F(val);
         #endif
-        display.print(ROUND(val));//, 1);
+        text = ROUND(val);
+
+        py += boxHeight;
+
+        int16_t x1, y1;
+        uint16_t w, h;
+        display.getTextBounds(text, px, py, &x1, &y1, &w, &h);
+        //Serial.println("w=" + String(w));
+        px += boxWidth / 2 - w / 4;
+        py += -boxHeight / 2 + h / 2;
+        
+        display.setCursor(px, py);
+        //display.setTextColor(SCREEN_COLOR_TEXT);//, color);
+        display.print(text);
       #endif
     } 
   }
